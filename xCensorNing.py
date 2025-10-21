@@ -9,7 +9,12 @@ from loguru import logger
 from pathlib import Path
 
 """
-xCensorNing 打码工具 - 可调椭圆扁度与垂直偏移版
+xCensorNing 打码工具 - 增强版
+支持：
+✅ 椭圆扁度调节
+✅ 垂直偏移调节
+✅ 遮罩范围放大倍率
+✅ 马赛克颗粒粗度可控
 """
 
 # -------------------- #
@@ -66,7 +71,7 @@ try:
 
 except ModuleNotFoundError:
     from nudenet import NudeDetector
-    logger.debug("使用 nudenet 进行图像检测")
+    logger.debug("使用 NudeNet 进行图像检测")
 
     def detector(image):
         nude_detector = NudeDetector()
@@ -106,17 +111,19 @@ def mosaic_blurry(img):
 
 
 # -------------------- #
-# 像素化椭圆模式（支持扁度与垂直偏移）
+# 像素化椭圆模式（可调扁度、偏移与范围）
 # -------------------- #
-def _mosaic_pixel_ellipse(image, box, block_size, scale=0.8, aspect=0.6, offset_y_ratio=-0.1):
+def _mosaic_pixel_ellipse(image, box, block_size,
+                          scale=0.8, aspect=0.6,
+                          offset_y_ratio=-0.1,
+                          scale_multiplier=1.2):
     """
     对检测到的区域应用椭圆像素化马赛克。
-    :param image: PIL.Image
-    :param box: [x, y, w, h]
-    :param block_size: 马赛克像素块大小
-    :param scale: 椭圆宽高缩放比例 (越小范围越小)
-    :param aspect: 椭圆高度压缩比例 (越小越扁)
-    :param offset_y_ratio: 垂直偏移比例，负值上移，正值下移
+    - block_size: 马赛克颗粒大小
+    - scale: 椭圆基础缩放比例
+    - aspect: 椭圆高度压缩比例（越小越扁）
+    - offset_y_ratio: 垂直偏移比例（负值上移）
+    - scale_multiplier: 遮罩范围倍率（越大覆盖越多）
     """
     x, y, w, h = box
     region = (x, y, x + w, y + h)
@@ -131,8 +138,8 @@ def _mosaic_pixel_ellipse(image, box, block_size, scale=0.8, aspect=0.6, offset_
     mask = Image.new("L", cropped.size, 0)
     draw = ImageDraw.Draw(mask)
 
-    ellipse_w = int(w * scale)
-    ellipse_h = int(h * scale * aspect)
+    ellipse_w = int(w * scale * scale_multiplier)
+    ellipse_h = int(h * scale * aspect * scale_multiplier)
     offset_x = (w - ellipse_w) // 2
     offset_y = int((h - ellipse_h) // 2 + h * offset_y_ratio)
 
@@ -145,7 +152,7 @@ def _mosaic_pixel_ellipse(image, box, block_size, scale=0.8, aspect=0.6, offset_
     return image
 
 
-def mosaic_pixel(img_path, aspect=0.6, offset_y_ratio=-0.1):
+def mosaic_pixel(img_path, aspect=0.6, offset_y_ratio=-0.1, scale_multiplier=1.2):
     img_path = str(img_path)
     box_list = detector(img_path)
 
@@ -155,8 +162,11 @@ def mosaic_pixel(img_path, aspect=0.6, offset_y_ratio=-0.1):
                 pil_img.width * NEIGHBOR if pil_img.width > pil_img.height else pil_img.height * NEIGHBOR
             )
             image = _mosaic_pixel_ellipse(
-                pil_img, box, neighbor, scale=0.8,
-                aspect=aspect, offset_y_ratio=offset_y_ratio
+                pil_img, box, neighbor,
+                scale=0.8,
+                aspect=aspect,
+                offset_y_ratio=offset_y_ratio,
+                scale_multiplier=scale_multiplier
             )
             image.save(img_path)
 
@@ -181,19 +191,22 @@ def mosaic_lines(img_path):
 # -------------------- #
 # 主处理函数
 # -------------------- #
-def process_images_gradio(input_folder_path, mosaic_type, neighbor_value_ui, aspect_value_ui, offset_value_ui):
+def process_images_gradio(input_folder_path, mosaic_type,
+                          neighbor_value_ui, aspect_value_ui,
+                          offset_value_ui, scale_multiplier_ui):
     global NEIGHBOR
     NEIGHBOR = float(neighbor_value_ui)
     aspect_value_ui = float(aspect_value_ui)
     offset_value_ui = float(offset_value_ui)
-    logger.info(f"参数：NEIGHBOR={NEIGHBOR}, aspect={aspect_value_ui}, offset_y_ratio={offset_value_ui}")
+    scale_multiplier_ui = float(scale_multiplier_ui)
+    logger.info(f"参数：NEIGHBOR={NEIGHBOR}, aspect={aspect_value_ui}, offset={offset_value_ui}, scale_mul={scale_multiplier_ui}")
 
     if not input_folder_path:
-        return "错误：请输入文件夹路径。"
+        return "❌ 错误：请输入文件夹路径。"
 
     input_path = Path(input_folder_path)
     if not input_path.is_dir():
-        return f"错误：'{input_folder_path}' 不是有效目录。"
+        return f"❌ 错误：'{input_folder_path}' 不是有效目录。"
 
     output_folder = Path("./output")
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -206,7 +219,7 @@ def process_images_gradio(input_folder_path, mosaic_type, neighbor_value_ui, asp
                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp'))]
 
         if not image_files:
-            return "信息：指定文件夹中没有找到支持的图片文件。"
+            return "ℹ️ 指定文件夹中没有找到图片文件。"
 
         for filename in image_files:
             original_img_path = input_path / filename
@@ -221,7 +234,8 @@ def process_images_gradio(input_folder_path, mosaic_type, neighbor_value_ui, asp
                 elif mosaic_type == "像素化 (Pixelated)":
                     mosaic_pixel(str(output_img_path),
                                  aspect=aspect_value_ui,
-                                 offset_y_ratio=offset_value_ui)
+                                 offset_y_ratio=offset_value_ui,
+                                 scale_multiplier=scale_multiplier_ui)
                 elif mosaic_type == "线条 (Lines)":
                     mosaic_lines(str(output_img_path))
 
@@ -230,7 +244,7 @@ def process_images_gradio(input_folder_path, mosaic_type, neighbor_value_ui, asp
                 logger.error(f"处理文件 '{filename}' 时出错: {e}")
                 error_messages.append(f"{filename}: {str(e)}")
 
-        status_message = f"处理完成！成功处理 {processed_files_count}/{len(image_files)} 张图片。输出目录: {output_folder.resolve()}"
+        status_message = f"处理完成！成功处理 {processed_files_count}/{len(image_files)} 张图片。\n输出目录: {output_folder.resolve()}"
         if error_messages:
             status_message += "\n错误详情:\n" + "\n".join(error_messages)
         return status_message
@@ -247,30 +261,33 @@ if __name__ == "__main__":
     iface = gr.Interface(
         fn=process_images_gradio,
         inputs=[
-            gr.Textbox(label="输入图片文件夹路径", placeholder="例如: C:\\Users\\YourName\\Pictures"),
+            gr.Textbox(label="📂 输入图片文件夹路径", placeholder="例如: C:\\Users\\YourName\\Pictures"),
             gr.Radio(choices=["模糊 (Blurry)", "像素化 (Pixelated)", "线条 (Lines)"],
                      label="选择打码模式", value="像素化 (Pixelated)"),
-            gr.Number(label="NEIGHBOR 值 (像素化强度)", value=NEIGHBOR,
+            gr.Number(label="🧩 NEIGHBOR 值 (像素化强度)", value=NEIGHBOR,
                       minimum=0.0001, maximum=0.1, step=0.0001,
                       info="值越小格子越大。推荐 0.001 - 0.05"),
-            gr.Slider(label="椭圆扁度 (aspect)", minimum=0.3, maximum=1.0, step=0.05, value=0.6,
-                      info="控制椭圆的扁度。越小越扁。"),
-            gr.Slider(label="垂直偏移 (offset_y_ratio)", minimum=-0.3, maximum=0.3, step=0.01, value=-0.1,
-                      info="控制马赛克区域上下偏移。负值上移，正值下移。")
+            gr.Slider(label="🔘 椭圆扁度 (aspect)", minimum=0.3, maximum=1.0, step=0.05, value=0.6,
+                      info="控制椭圆的扁度，越小越扁。"),
+            gr.Slider(label="↕ 垂直偏移 (offset_y_ratio)", minimum=-0.3, maximum=0.3, step=0.01, value=-0.1,
+                      info="控制马赛克区域上下偏移，负值上移。"),
+            gr.Slider(label="📏 遮罩范围倍率 (scale_multiplier)", minimum=0.8, maximum=2.0, step=0.1, value=1.2,
+                      info="控制马赛克区域整体放大。")
         ],
         outputs=gr.Textbox(label="状态输出", lines=7, interactive=False),
-        title="xCensorNing 图片打码工具 (可调扁度与偏移版)",
+        title="xCensorNing 图片打码工具 (增强版)",
         description=(
-            "1. 输入图片文件夹路径\n"
-            "2. 选择打码模式\n"
-            "3. 调整 NEIGHBOR、椭圆扁度与垂直偏移\n"
-            "4. 点击 Submit 开始处理\n"
-            "输出结果会保存在脚本所在目录的 output 文件夹。"
+            "使用说明：\n"
+            "1输入图片文件夹路径\n"
+            "2选择打码模式\n"
+            "3调整像素化强度、椭圆扁度、垂直偏移与范围倍率\n"
+            "4点击 Submit 开始处理\n\n"
+            "输出结果将保存在脚本同目录的 output 文件夹中。"
         ),
         allow_flagging="never",
         theme=gr.themes.Soft(),
         live=False
     )
 
-    logger.info("启动 Gradio 界面，请在浏览器中打开 http://127.0.0.1:2333")
+    logger.info("🚀 启动 Gradio 界面：http://127.0.0.1:2333")
     iface.launch(server_name="127.0.0.1", server_port=2333)
